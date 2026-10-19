@@ -2,11 +2,8 @@
 
 use std::time::Instant;
 
-use ratatui::layout::Rect;
-
 use crate::game::Game;
 use crate::patterns::Pattern;
-use crate::ui::Density;
 
 const MIN_SPEED: u32 = 1;
 const MAX_SPEED: u32 = 60;
@@ -21,15 +18,15 @@ pub struct App {
     pub cursor: (u16, u16),
     pub running: bool,
     pub speed: u32,
-    /// Souris en train de dessiner (clic gauche enfoncé).
+    /// Souris en train de dessiner (clic gauche enfoncé sur la grille).
     pub drawing: bool,
     /// Valeur peinte pendant le drag (naissante ou mourante).
     pub drag_value: bool,
+    /// Cellule sous le pointeur, si elle est au-dessus de la grille.
+    pub hover: Option<(u16, u16)>,
+    /// Dernière cellule peinte pendant l'appui courant (Reset du souris).
+    pub last_painted: Option<(u16, u16)>,
     pub quit: bool,
-    /// Portion de la grille visible à l'écran (mise à jour à chaque frame).
-    pub view: Rect,
-    /// Densité de rendu (combien de cellules par caractère du terminal).
-    pub density: Density,
     /// Message transitoire affiché dans la barre de statut.
     pub message: Option<(String, Instant)>,
 }
@@ -44,18 +41,12 @@ impl App {
             speed: DEFAULT_SPEED,
             drawing: false,
             drag_value: false,
+            hover: None,
+            last_painted: None,
             quit: false,
-            view: Rect::default(),
-            density: Density::Full,
             message: None,
             game,
         }
-    }
-
-    /// Fait tourner la densité de rendu et affiche le nouveau niveau.
-    pub fn cycle_density(&mut self) {
-        self.density = self.density.next();
-        self.set_message(format!("Densité : {}", self.density.label()));
     }
 
     /// Bascule entre bords toriques et bords morts.
@@ -118,8 +109,10 @@ impl App {
         self.speed = (self.speed + 2).min(MAX_SPEED);
     }
 
+    /// Baisse la vitesse de 2 gen/s (clampée à [MIN_SPEED, MAX_SPEED]), avec
+    /// un dernier pas de 1 pour que la vitesse minimale soit accessible.
     pub fn speed_down(&mut self) {
-        self.speed = self.speed.saturating_sub(2).max(MIN_SPEED);
+        self.speed = (self.speed - 1).saturating_sub(1).max(MIN_SPEED);
     }
 
     /// Déplace le curseur de (dx, dy) en restant dans la grille.
@@ -146,5 +139,60 @@ impl App {
             cy.saturating_sub(pattern.height() / 2),
         );
         self.game.insert_pattern(pattern, Some(at));
+        self.set_message(format!("{} inséré", pattern.name()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::patterns::GOSPER;
+
+    #[test]
+    fn cursor_moves_within_grid() {
+        let mut app = App::new(20, 10);
+        app.running = false;
+        app.cursor = (0, 0);
+        app.move_cursor(-1, 0);
+        app.move_cursor(0, -1);
+        assert_eq!(app.cursor, (0, 0), "le curseur reste dans la grille");
+        app.move_cursor(1, 0);
+        app.move_cursor(0, 1);
+        assert_eq!(app.cursor, (1, 1));
+        app.move_cursor(i16::MAX, i16::MAX);
+        assert_eq!(app.cursor, (19, 9), "clampé au coin bas-droit");
+    }
+
+    #[test]
+    fn speed_limits() {
+        let mut app = App::new(10, 10);
+        app.speed = MAX_SPEED;
+        app.speed_up();
+        assert_eq!(app.speed, MAX_SPEED);
+        let mut downs = 0;
+        while app.speed > MIN_SPEED {
+            app.speed_down();
+            downs += 1;
+            assert!(downs < 100, "la vitesse ne descend plus");
+        }
+        assert_eq!(app.speed, MIN_SPEED);
+    }
+
+    #[test]
+    fn insert_pattern_reports_name() {
+        let mut app = App::new(60, 60);
+        app.insert_pattern(&GOSPER);
+        assert_eq!(app.current_message(), Some("Canon Gosper inséré"));
+    }
+
+    #[test]
+    fn messages_expire() {
+        let mut app = App::new(10, 10);
+        app.set_message("coucou".into());
+        assert_eq!(app.current_message(), Some("coucou"));
+        // Forcer l'expiration.
+        app.message = Some(("vieux".into(), Instant::now() - MESSAGE_DURATION * 2));
+        assert_eq!(app.current_message(), None);
+        assert!(app.message.is_none(), "le message expiré est retiré");
     }
 }

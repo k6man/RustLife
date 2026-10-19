@@ -1,82 +1,66 @@
-//! `la_vie` — Jeu de la Vie de Conway dans le terminal, avec ratatui.
+//! `la_vie` — Jeu de la Vie de Conway dans une fenêtre graphique (eframe/egui).
 
 mod app;
 mod game;
 mod patterns;
 mod ui;
 
-use std::io;
-use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent,
-        KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-    },
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode},
-};
-use ratatui::DefaultTerminal;
+use eframe::{Frame, NativeOptions};
+use eframe::egui::{self, Context};
 
 use crate::app::App;
 use crate::patterns::{GLIDER, GOSPER, LWSS, PULSAR};
 
-const TICK: Duration = Duration::from_millis(16);
+/// Taille de la grille de jeu (fixe, indépendante de la fenêtre : la grille
+/// est affichée entièrement, ajustée au panneau central).
+const GRID_W: u16 = 120;
+const GRID_H: u16 = 80;
 
-fn main() -> ExitCode {
-    // La capture souris doit être active avant `ratatui::init()`, qui met
-    // lui-même le terminal en mode brut et installe un hook de panique qui
-    // restaure l'écran (mode brut + écran alternatif) en cas de crash.
-    if let Err(e) = enable_raw_mode() {
-        eprintln!("Impossible de passer le terminal en mode brut : {e}");
-        return ExitCode::FAILURE;
-    }
-    if let Err(e) = execute!(io::stdout(), EnableMouseCapture) {
-        let _ = disable_raw_mode();
-        eprintln!("Impossible d'activer la capture souris : {e}");
-        return ExitCode::FAILURE;
-    }
-
-    let mut terminal = ratatui::init();
-
-    let size = terminal.size().unwrap_or_default();
-    let mut app = App::new(
-        size.width.saturating_sub(2).max(4),  // - 2 bordures
-        size.height.saturating_sub(5).max(4), // - 2 bordures + 2 lignes de statut
-    );
-
-    let result = run(&mut terminal, &mut app);
-
-    // Restauration propre du terminal dans tous les cas.
-    ratatui::restore();
-    let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), DisableMouseCapture);
-
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("Erreur : {e}");
-            ExitCode::FAILURE
-        }
-    }
+fn main() -> Result<(), eframe::Error> {
+    let options = NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("la_vie — Jeu de la Vie de Conway")
+            .with_inner_size([1200.0, 800.0]),
+        ..Default::default()
+    };
+    let state = LaVie {
+        app: App::new(GRID_W, GRID_H),
+        last_step: Instant::now(),
+    };
+    eframe::run_native("la_vie", options, Box::new(move |_cc| Ok(Box::new(state))))
 }
 
-fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
-    let mut last_step = Instant::now();
-    while !app.quit {
-        terminal.draw(|f| ui::draw(f, app))?;
+/// Adaptateur entre l'état [`App`] et la boucle eframe : `logic` fait avancer
+/// la simulation et traite le clavier, `ui` dessine l'interface.
+struct LaVie {
+    app: App,
+    last_step: Instant,
+}
 
-        if event::poll(TICK)? {
-            handle_event(app)?;
+impl eframe::App for LaVie {
+    fn logic(&mut self, ctx: &Context, _frame: &mut Frame) {
+        handle_keys(&mut self.app, ctx);
+
+        if self.app.quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        if app.running && last_step.elapsed() >= step_interval(app.speed) {
-            app.game.step();
-            last_step = Instant::now();
+        if self.app.running && self.last_step.elapsed() >= step_interval(self.app.speed) {
+            self.app.step();
+            self.last_step = Instant::now();
+        }
+        if self.app.running {
+            // Prochaine frame à l'échéance du tick : économe en CPU quand la
+            // souris ne bouge pas (egui ne redessine que sur événement sinon).
+            ctx.request_repaint_after(step_interval(self.app.speed).saturating_sub(self.last_step.elapsed()));
         }
     }
-    Ok(())
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut Frame) {
+        ui::draw(ui, &mut self.app);
+    }
 }
 
 /// Intervalle entre deux générations selon la vitesse (générations/seconde).
@@ -84,59 +68,66 @@ fn step_interval(speed: u32) -> Duration {
     Duration::from_millis(u64::from(1_000 / speed.max(1)))
 }
 
-fn handle_event(app: &mut App) -> io::Result<()> {
-    match event::read()? {
-        Event::Key(key) if key.kind == KeyEventKind::Press => handle_key(app, key),
-        Event::Mouse(mouse) => handle_mouse(app, mouse),
-        Event::Resize(_, _) => {} // ratatui redessine tout à la prochaine frame
-        _ => {}
-    }
-    Ok(())
-}
-
-fn handle_key(app: &mut App, key: KeyEvent) {
-    match (key.modifiers, key.code) {
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) | (_, KeyCode::Char('q')) => app.quit = true,
-        (_, KeyCode::Char(' ')) => app.running = !app.running,
-        (_, KeyCode::Char('n')) => app.step(),
-        (_, KeyCode::Char('+')) | (_, KeyCode::Char('=')) => app.speed_up(),
-        (_, KeyCode::Char('-')) | (_, KeyCode::Char('_')) => app.speed_down(),
-        (_, KeyCode::Char('r') | KeyCode::Char('R')) => app.game.randomize(),
-        (_, KeyCode::Char('c' | 'C')) => app.game.clear(),
-        (_, KeyCode::Char('t')) => app.toggle_toroidal(),
-        (_, KeyCode::Char('z' | 'Z')) => app.cycle_density(),
-        (_, KeyCode::Char('s')) => app.save(),
-        (_, KeyCode::Char('o')) => app.load(),
-        (_, KeyCode::Enter) => app.draw_here(),
-        (_, KeyCode::Char('1')) => app.insert_pattern(&GLIDER),
-        (_, KeyCode::Char('2')) => app.insert_pattern(&PULSAR),
-        (_, KeyCode::Char('3')) => app.insert_pattern(&LWSS),
-        (_, KeyCode::Char('4')) => app.insert_pattern(&GOSPER),
-        (_, KeyCode::Up | KeyCode::Char('k')) => app.move_cursor(0, -1),
-        (_, KeyCode::Down | KeyCode::Char('j')) => app.move_cursor(0, 1),
-        (_, KeyCode::Left | KeyCode::Char('h')) => app.move_cursor(-1, 0),
-        (_, KeyCode::Right | KeyCode::Char('l')) => app.move_cursor(1, 0),
-        _ => {}
-    }
-}
-
-fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
-    match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
-            if let Some((gx, gy)) = ui::screen_to_game(app, mouse.column, mouse.row) {
-                app.drag_value = !app.game.is_alive(gx, gy);
-                app.game.set_alive(gx, gy, app.drag_value);
-                app.drawing = true;
+fn handle_keys(app: &mut App, ctx: &Context) {
+    use egui::Key;
+    ctx.input(|i| {
+        // `Q` ou `Échap` : quitter proprement.
+        if i.key_pressed(Key::Q) || i.key_pressed(Key::Escape) {
+            app.quit = true;
+        }
+        if i.key_pressed(Key::Space) {
+            app.running = !app.running;
+        }
+        if i.key_pressed(Key::N) {
+            app.step();
+        }
+        if i.key_pressed(Key::Equals) {
+            app.speed_up();
+        }
+        if i.key_pressed(Key::Minus) {
+            app.speed_down();
+        }
+        if i.key_pressed(Key::R) {
+            app.game.randomize();
+            app.set_message("Population aléatoire".into());
+        }
+        if i.key_pressed(Key::C) {
+            app.game.clear();
+            app.set_message("Grille vidée".into());
+        }
+        if i.key_pressed(Key::T) {
+            app.toggle_toroidal();
+        }
+        if i.key_pressed(Key::S) {
+            app.save();
+        }
+        if i.key_pressed(Key::O) {
+            app.load();
+        }
+        if i.key_pressed(Key::Enter) {
+            app.draw_here();
+        }
+        for (key, pattern) in [
+            (Key::Num1, &GLIDER),
+            (Key::Num2, &PULSAR),
+            (Key::Num3, &LWSS),
+            (Key::Num4, &GOSPER),
+        ] {
+            if i.key_pressed(key) {
+                app.insert_pattern(pattern);
             }
         }
-        MouseEventKind::Drag(MouseButton::Left) if app.drawing => {
-            if let Some((gx, gy)) = ui::screen_to_game(app, mouse.column, mouse.row) {
-                app.game.set_alive(gx, gy, app.drag_value);
-            }
+        if i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::K) {
+            app.move_cursor(0, -1);
         }
-        MouseEventKind::Up(_) => app.drawing = false,
-        MouseEventKind::ScrollUp => app.move_cursor(0, -1),
-        MouseEventKind::ScrollDown => app.move_cursor(0, 1),
-        _ => {}
-    }
+        if i.key_pressed(Key::ArrowDown) || i.key_pressed(Key::J) {
+            app.move_cursor(0, 1);
+        }
+        if i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::H) {
+            app.move_cursor(-1, 0);
+        }
+        if i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::L) {
+            app.move_cursor(1, 0);
+        }
+    });
 }

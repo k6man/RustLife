@@ -1,6 +1,7 @@
 # la_vie
 
-Le Jeu de la Vie de Conway dans votre terminal, écrit en Rust avec [ratatui](https://ratatui.rs).
+Le Jeu de la Vie de Conway dans une fenêtre graphique, écrit en Rust avec
+[egui](https://egui.rs) / [eframe](https://github.com/emilk/egui).
 
 ## Lancement
 
@@ -8,48 +9,35 @@ Le Jeu de la Vie de Conway dans votre terminal, écrit en Rust avec [ratatui](ht
 cargo run --release
 ```
 
+Ouvre une fenêtre (120×80 cellules, affichées entièrement et ajustées à la
+taille de la fenêtre).
+
 ## Les règles
 
 - Une cellule vivante avec **2 ou 3** voisines vivantes survit.
 - Une cellule morte avec **exactement 3** voisines vivantes naît.
 - Sinon elle meurt ou reste morte.
 - **Bords morts** par défaut : toute cellule hors de la grille est considérée comme morte.
-- La touche `t` bascule en mode **torique** : la grille se replie sur elle-même et les
-  vaisseaux traversent les bords.
-
-## Densité de rendu (zoom)
-
-Un caractère du terminal peut afficher plus d'une cellule — la touche `z` fait
-tourner trois niveaux :
-
-| Niveau | Caractères | Cellules par caractère | Écran 80×24 affiche… |
-|---|---|---|---|
-| Plein | `█` / espace | 1×1 | 78×19 |
-| Demi-bloc | `▀` `▄` `█` | 1×2 | 78×38 |
-| Braille | points de braille | 2×4 | 156×76 |
-
-Le curseur est mis en évidence par inversion vidéo dans les modes denses, la
-souris reste fonctionnelle (un clic cible la mini-cellule du coin haut-gauche).
+- Le bouton `Bords` (touche `t`) bascule en mode **torique** : la grille se replie
+  sur elle-même et les vaisseaux traversent les bords.
 
 ## Contrôles
 
-| Touche | Action |
+| Touche / souris | Action |
 |---|---|
 | `Espace` | lecture / pause |
 | `n` | avancer d'une génération |
-| `+` / `-` | augmente / baisse la vitesse |
+| `+` / `-` (ou le slider) | augmente / baisse la vitesse |
 | Flèches ou `hjkl` | déplacer le curseur |
 | `Entrée` | dessiner / effacer la cellule sous le curseur |
-| `1` / `2` / `3` / `4` | insérer un Glider / un Pulsar / un LWSS / le canon de Gosper au curseur |
-| Souris | clic (ou glisser) pour dessiner des cellules |
-| Molette | déplacer le curseur verticalement |
-| `t` | basculer bords morts ↔ bords toriques |
-| `z` | faire tourner la densité : plein (1×1) → demi-bloc (1×2) → braille (2×4) |
-| `s` | sauvegarder l'état dans `la_vie_save.txt` |
-| `o` | charger `la_vie_save.txt` |
-| `R` | regénérer une population aléatoire |
-| `c` | vider la grille |
-| `q` ou `Ctrl-C` | quitter proprement |
+| `1` / `2` / `3` / `4` (ou les boutons) | insérer un Glider / un Pulsar / un LWSS / le canon de Gosper au curseur |
+| Clic + glisser sur la grille | dessiner / effacer des cellules |
+| `t` (ou bouton `Bords`) | basculer bords morts ↔ bords toriques |
+| `s` (bouton `Sauver`) | sauvegarder l'état dans `la_vie_save.txt` |
+| `o` (bouton `Charger`) | charger `la_vie_save.txt` |
+| `R` (bouton `Aléa`) | regénérer une population aléatoire |
+| `c` (bouton `Vider`) | vider la grille |
+| `q` ou `Échap` (bouton `Quitter`) | quitter proprement |
 
 ## Architecture
 
@@ -58,11 +46,13 @@ souris reste fonctionnelle (un clic cible la mini-cellule du coin haut-gauche).
   de patterns, remplissage aléatoire (LCG interne), sauvegarde/chargement de l'état.
 - `src/patterns.rs` — définition des patterns (Glider, Pulsar, LWSS, canon de Gosper)
   en art ASCII.
-- `src/ui.rs` — le rendu ratatui : grille centrée avec densité de rendu réglable
-  (plein / demi-bloc / braille), curseur, ligne de statut, messages transitoires.
+- `src/ui.rs` — le rendu egui : grille peinte entièrement dans le panneau central
+  (taille de cellule ajustée à la fenêtre), curseur, ligne de statut, messages
+  transitoires.
 - `src/app.rs` — l'état de l'application (curseur, lecture, vitesse, dessin à la souris,
-  bascule de bords, densité, sauvegarde).
-- `src/main.rs` — la boucle d'événements crossterm et le pilotage du terminal.
+  bascule de bords, sauvegarde).
+- `src/main.rs` — l'application eframe : interface (`App::ui`), simulation et clavier
+  (`App::logic`).
 
 ## Tests
 
@@ -72,5 +62,6 @@ cargo test
 
 Couvre les règles (oscillateur blinker, bords morts au coin, repliement torique), les
 formes des patterns, le déplacement du LWSS (vaisseau c/2 : +1 cellule vers la droite
-toutes les 2 générations), la production de gliders du canon de Gosper, et la
-sauvegarde/chargement (aller-retour + rejet des fichiers invalides).
+toutes les 2 générations), la production de gliders du canon de Gosper, la
+sauvegarde/chargement (aller-retour + rejet des fichiers invalides) et l'état de
+l'application (curseur, vitesse, messages).
